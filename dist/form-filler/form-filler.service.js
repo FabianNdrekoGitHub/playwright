@@ -43,6 +43,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FormFillerService = void 0;
+const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
@@ -68,40 +69,58 @@ const RESOLUTIONS = [
     { w: 2560, h: 1440 },
     { w: 1280, h: 1024 },
 ];
-const CHROME_VERSIONS = [
-    120, 121, 122, 123, 124, 125, 126, 127, 128,
-    129, 130, 131, 132, 133, 134, 135, 136, 137,
-    138, 139, 140, 141, 142, 143, 144, 145,
-];
-const US_TIMEZONES = [
-    { id: 'America/New_York', locale: 'en-US' },
-    { id: 'America/Chicago', locale: 'en-US' },
-    { id: 'America/Denver', locale: 'en-US' },
-    { id: 'America/Los_Angeles', locale: 'en-US' },
-    { id: 'America/Phoenix', locale: 'en-US' },
-];
+const COUNTRY_LOCALE = {
+    US: 'en-US', GB: 'en-GB', AU: 'en-AU', CA: 'en-CA',
+    CH: 'de-CH', DE: 'de-DE', AT: 'de-AT',
+    FR: 'fr-FR', BE: 'fr-BE',
+    IT: 'it-IT', ES: 'es-ES', NL: 'nl-NL',
+    PL: 'pl-PL', CZ: 'cs-CZ', RO: 'ro-RO',
+};
 function pickRandom(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
-function rand(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-function generatePersona() {
-    const res = pickRandom(RESOLUTIONS);
-    const chromeV = pickRandom(CHROME_VERSIONS);
-    const tz = pickRandom(US_TIMEZONES);
-    const build = `${rand(1000, 9999)}.${rand(10, 99)}`;
-    return {
-        screenWidth: res.w,
-        screenHeight: res.h,
-        chromeVersion: chromeV,
-        chromeBuild: build,
-        cores: pickRandom([2, 4, 8, 16]),
-        memory: pickRandom([2, 4, 8]),
-        timezoneId: tz.id,
-        locale: tz.locale,
-        userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeV}.0.0.0 Safari/537.36`,
-    };
+function getProxyGeoInfo(proxyServer, username, password) {
+    const fallback = { timezone: 'Europe/Zurich', locale: 'de-CH', city: 'Zurich', countryCode: 'CH' };
+    return new Promise((resolve) => {
+        try {
+            const proxy = new URL(proxyServer);
+            const auth = Buffer.from(`${username}:${password}`).toString('base64');
+            const req = http.request({
+                hostname: proxy.hostname,
+                port: parseInt(proxy.port) || 80,
+                path: 'http://ip-api.com/json/?fields=timezone,countryCode,city',
+                method: 'GET',
+                headers: {
+                    Host: 'ip-api.com',
+                    'Proxy-Authorization': `Basic ${auth}`,
+                },
+            }, (res) => {
+                let raw = '';
+                res.on('data', (chunk) => (raw += chunk));
+                res.on('end', () => {
+                    try {
+                        const json = JSON.parse(raw);
+                        const cc = json.countryCode || 'CH';
+                        resolve({
+                            timezone: json.timezone || fallback.timezone,
+                            city: json.city || fallback.city,
+                            countryCode: cc,
+                            locale: COUNTRY_LOCALE[cc] || 'en-US',
+                        });
+                    }
+                    catch {
+                        resolve(fallback);
+                    }
+                });
+            });
+            req.on('error', () => resolve(fallback));
+            req.setTimeout(8000, () => { req.destroy(); resolve(fallback); });
+            req.end();
+        }
+        catch {
+            resolve(fallback);
+        }
+    });
 }
 function fetchWebshareProxies(apiKey) {
     return new Promise((resolve) => {
@@ -152,14 +171,16 @@ let FormFillerService = class FormFillerService {
             const proxy = pickRandom(proxyList);
             proxyServer = `http://${proxy.host}:${proxy.port}`;
         }
-        const persona = generatePersona();
+        console.log('Detecting proxy location...');
+        const geo = await getProxyGeoInfo(proxyServer, wsUser, wsPass);
+        const res = pickRandom(RESOLUTIONS);
         console.log('─────────────────────────────────────────');
         console.log(`Target URL   : ${formUrl}`);
         console.log(`Proxy        : ${proxyServer}`);
-        console.log(`Screen       : ${persona.screenWidth}x${persona.screenHeight}`);
-        console.log(`Chrome       : ${persona.chromeVersion}`);
-        console.log(`Cores / RAM  : ${persona.cores} cores / ${persona.memory} GB`);
-        console.log(`Timezone     : ${persona.timezoneId}`);
+        console.log(`Location     : ${geo.city}, ${geo.countryCode}`);
+        console.log(`Timezone     : ${geo.timezone}`);
+        console.log(`Locale       : ${geo.locale}`);
+        console.log(`Screen       : ${res.w}x${res.h}`);
         console.log('─────────────────────────────────────────');
         try {
             const browser = await playwright_1.chromium.launch({
@@ -170,96 +191,18 @@ let FormFillerService = class FormFillerService {
                     '--disable-setuid-sandbox',
                     '--disable-blink-features=AutomationControlled',
                     '--disable-infobars',
-                    `--window-size=${persona.screenWidth},${persona.screenHeight}`,
+                    `--window-size=${res.w},${res.h}`,
                     '--ignore-certificate-errors',
                     '--ignore-certificate-errors-spki-list',
-                    '--use-gl=swiftshader',
                     '--disable-features=IsolateOrigins,site-per-process',
                     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
                 ],
             });
             const context = await browser.newContext({
-                viewport: { width: persona.screenWidth, height: persona.screenHeight },
+                viewport: { width: res.w, height: res.h },
                 ignoreHTTPSErrors: true,
-                locale: persona.locale,
-                timezoneId: persona.timezoneId,
-                userAgent: persona.userAgent,
-            });
-            await context.addInitScript((p) => {
-                const w = window;
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => p.cores });
-                Object.defineProperty(navigator, 'deviceMemory', { get: () => p.memory });
-                Object.defineProperty(screen, 'width', { get: () => p.screenWidth });
-                Object.defineProperty(screen, 'height', { get: () => p.screenHeight });
-                Object.defineProperty(screen, 'availWidth', { get: () => p.screenWidth });
-                Object.defineProperty(screen, 'availHeight', { get: () => p.screenHeight - 40 });
-                Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-                Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
-                w.chrome = {
-                    app: {
-                        isInstalled: false,
-                        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                    },
-                    runtime: {
-                        PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
-                        PlatformArch: { ARM: 'arm', ARM64: 'arm64', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
-                        connect: () => ({ postMessage: () => { }, disconnect: () => { }, onDisconnect: { addListener: () => { } }, onMessage: { addListener: () => { } } }),
-                        sendMessage: () => { },
-                        onMessage: { addListener: () => { }, removeListener: () => { }, hasListeners: () => false },
-                        onConnect: { addListener: () => { }, removeListener: () => { }, hasListeners: () => false },
-                    },
-                    csi: () => { },
-                    loadTimes: () => ({}),
-                };
-                const origQuery = navigator.permissions.query.bind(navigator.permissions);
-                navigator.permissions.query = (params) => params?.name === 'notifications'
-                    ? Promise.resolve({ state: w.Notification?.permission ?? 'default', onchange: null })
-                    : origQuery(params);
-                const cv = String(p.chromeVersion);
-                const cvf = `${p.chromeVersion}.0.${p.chromeBuild}`;
-                const uaData = {
-                    brands: [
-                        { brand: 'Not(A:Brand', version: '99' },
-                        { brand: 'Google Chrome', version: cv },
-                        { brand: 'Chromium', version: cv },
-                    ],
-                    mobile: false,
-                    platform: 'Windows',
-                    getHighEntropyValues: () => Promise.resolve({
-                        platform: 'Windows',
-                        platformVersion: '10.0.0',
-                        architecture: 'x86',
-                        bitness: '64',
-                        model: '',
-                        uaFullVersion: cvf,
-                        fullVersionList: [
-                            { brand: 'Not(A:Brand', version: '99.0.0.0' },
-                            { brand: 'Google Chrome', version: cvf },
-                            { brand: 'Chromium', version: cvf },
-                        ],
-                    }),
-                    toJSON: () => ({
-                        brands: [
-                            { brand: 'Not(A:Brand', version: '99' },
-                            { brand: 'Google Chrome', version: cv },
-                            { brand: 'Chromium', version: cv },
-                        ],
-                        mobile: false,
-                        platform: 'Windows',
-                    }),
-                };
-                Object.defineProperty(navigator, 'userAgentData', { get: () => uaData, configurable: true });
-            }, {
-                cores: persona.cores,
-                memory: persona.memory,
-                screenWidth: persona.screenWidth,
-                screenHeight: persona.screenHeight,
-                chromeVersion: persona.chromeVersion,
-                chromeBuild: persona.chromeBuild,
+                locale: geo.locale,
+                timezoneId: geo.timezone,
             });
             const page = await context.newPage();
             console.log('Navigating to URL...');
