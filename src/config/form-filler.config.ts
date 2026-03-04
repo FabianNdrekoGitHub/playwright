@@ -2,8 +2,9 @@ import { registerAs } from '@nestjs/config';
 
 export interface FormFillerConfig {
   formUrl: string;
-  brightDataUser: string | null;
-  brightDataPass: string | null;
+  webshareUser: string | null;
+  websharePass: string | null;
+  webshareApiKey: string | null;
 }
 
 export default registerAs(
@@ -12,8 +13,9 @@ export default registerAs(
     const env = process.env;
     return {
       formUrl: env.FORM_URL || 'https://example.com/form',
-      brightDataUser: env.BRIGHT_DATA_USERNAME || null,
-      brightDataPass: env.BRIGHT_DATA_PASSWORD || null,
+      webshareUser: env.WEBSHARE_USERNAME || null,
+      websharePass: env.WEBSHARE_PASSWORD || null,
+      webshareApiKey: env.WEBSHARE_API_KEY || null,
     };
   },
 );
