@@ -1,5 +1,6 @@
 export interface FormFillerConfig {
     formUrl: string;
+    webshareProxyServer: string | null;
     webshareUser: string | null;
     websharePass: string | null;
     webshareApiKey: string | null;
