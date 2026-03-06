@@ -16,9 +16,11 @@
     "dotenv": "^16.4.5",
     "playwright": "^1.49.0",
     "playwright-extra": "^4.3.6",
+    "proxy-chain": "^2.7.1",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "undici": "^7.22.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",

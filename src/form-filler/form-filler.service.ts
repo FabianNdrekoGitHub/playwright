@@ -1,8 +1,14 @@
-import * as http  from 'http';
 import * as https from 'https';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright-extra';
+import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+import * as proxyChain from 'proxy-chain';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
+
+// Register stealth plugin
+chromium.use(stealthPlugin());
+webkit.use(stealthPlugin());
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,9 +22,173 @@ interface GeoInfo {
   locale:      string;
   city:        string;
   countryCode: string;
+  latitude:    number;
+  longitude:   number;
 }
 
-// ─── Proxy pool ───────────────────────────────────────────────────────────────
+interface DeviceProfile {
+  name:                string;
+  userAgent:           string;
+  platform:            string;
+  viewport:            { width: number; height: number };
+  screen:              { width: number; height: number };
+  isMobile:            boolean;
+  hasTouch:            boolean;
+  hardwareConcurrency: number;
+  deviceMemory:        number;
+  gpu:                 { vendor: string; renderer: string };
+  engine:              'chromium' | 'webkit';
+}
+
+// ─── Device profiles ──────────────────────────────────────────────────────────
+
+const DEVICE_PROFILES: DeviceProfile[] = [
+  {
+    name:      'iPhone 15 Pro',
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    platform:  'iPhone',
+    viewport:  { width: 393, height: 852 },
+    screen:    { width: 393, height: 852 },
+    isMobile:  true,
+    hasTouch:  true,
+    hardwareConcurrency: 6,
+    deviceMemory: 6,
+    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
+    engine:    'webkit',
+  },
+  {
+    name:      'iPhone 14',
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+    platform:  'iPhone',
+    viewport:  { width: 390, height: 844 },
+    screen:    { width: 390, height: 844 },
+    isMobile:  true,
+    hasTouch:  true,
+    hardwareConcurrency: 6,
+    deviceMemory: 4,
+    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
+    engine:    'webkit',
+  },
+  {
+    name:      'Samsung Galaxy S24',
+    userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    platform:  'Linux armv81',
+    viewport:  { width: 412, height: 915 },
+    screen:    { width: 412, height: 915 },
+    isMobile:  true,
+    hasTouch:  true,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 750' },
+    engine:    'chromium',
+  },
+  {
+    name:      'Samsung Galaxy S23',
+    userAgent: 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    platform:  'Linux armv81',
+    viewport:  { width: 393, height: 851 },
+    screen:    { width: 393, height: 851 },
+    isMobile:  true,
+    hasTouch:  true,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 740' },
+    engine:    'chromium',
+  },
+  {
+    name:      'iPad Pro 12.9"',
+    userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    platform:  'iPad',
+    viewport:  { width: 1024, height: 1366 },
+    screen:    { width: 1024, height: 1366 },
+    isMobile:  false,
+    hasTouch:  true,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
+    engine:    'webkit',
+  },
+  {
+    name:      'MacBook Pro 14"',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Safari/537.36',
+    platform:  'MacIntel',
+    viewport:  { width: 1512, height: 982 },
+    screen:    { width: 1512, height: 982 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 12,
+    deviceMemory: 16,
+    gpu: { vendor: 'Apple', renderer: 'Apple M3 Pro' },
+    engine:    'chromium',
+  },
+  {
+    name:      'MacBook Air M2',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    platform:  'MacIntel',
+    viewport:  { width: 1440, height: 900 },
+    screen:    { width: 1440, height: 900 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'Apple', renderer: 'Apple M2' },
+    engine:    'chromium',
+  },
+  {
+    name:      'Windows Desktop (RTX 3060)',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    platform:  'Win32',
+    viewport:  { width: 1920, height: 1080 },
+    screen:    { width: 1920, height: 1080 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 16,
+    deviceMemory: 16,
+    gpu: { vendor: 'NVIDIA Corporation', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    engine:    'chromium',
+  },
+  {
+    name:      'Windows Desktop (GTX 1080)',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.122 Safari/537.36',
+    platform:  'Win32',
+    viewport:  { width: 2560, height: 1440 },
+    screen:    { width: 2560, height: 1440 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 12,
+    deviceMemory: 16,
+    gpu: { vendor: 'NVIDIA Corporation', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    engine:    'chromium',
+  },
+  {
+    name:      'Windows Laptop (Intel Iris)',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    platform:  'Win32',
+    viewport:  { width: 1366, height: 768 },
+    screen:    { width: 1366, height: 768 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'Intel Inc.', renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    engine:    'chromium',
+  },
+  {
+    name:      'Windows Laptop (AMD Radeon)',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    platform:  'Win32',
+    viewport:  { width: 1600, height: 900 },
+    screen:    { width: 1600, height: 900 },
+    isMobile:  false,
+    hasTouch:  false,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    gpu: { vendor: 'AMD', renderer: 'ANGLE (AMD, AMD Radeon RX 580 Series Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    engine:    'chromium',
+  },
+];
+
+// ─── Proxy pool (fallback) ────────────────────────────────────────────────────
 
 const FALLBACK_PROXIES: ProxyEntry[] = [
   { host: '31.59.20.176',    port: 6754 },
@@ -31,16 +201,6 @@ const FALLBACK_PROXIES: ProxyEntry[] = [
   { host: '216.10.27.159',   port: 6837 },
   { host: '142.111.67.146',  port: 5611 },
   { host: '194.39.32.164',   port: 6461 },
-];
-
-const RESOLUTIONS = [
-  { w: 1366, h: 768  },
-  { w: 1920, h: 1080 },
-  { w: 1440, h: 900  },
-  { w: 1280, h: 800  },
-  { w: 1600, h: 900  },
-  { w: 2560, h: 1440 },
-  { w: 1280, h: 1024 },
 ];
 
 // Country code → browser locale mapping
@@ -59,57 +219,42 @@ function pickRandom<T>(arr: T[]): T {
 }
 
 /**
- * Asks ip-api.com for the timezone/country of the IP the proxy assigns us.
- * Uses a plain HTTP request forwarded through the proxy (no CONNECT needed for HTTP).
+ * Geo lookup via the local proxy-chain tunnel.
+ * The tunnel requires no auth (proxy-chain handles upstream credentials),
+ * so we just point undici at it and make a plain HTTPS request.
  */
-function getProxyGeoInfo(proxyServer: string, username: string, password: string): Promise<GeoInfo> {
-  const fallback: GeoInfo = { timezone: 'Europe/Zurich', locale: 'de-CH', city: 'Zurich', countryCode: 'CH' };
+async function getProxyGeoInfo(localProxyUrl: string): Promise<GeoInfo | null> {
+  try {
+    const dispatcher = new ProxyAgent({ uri: localProxyUrl });
 
-  return new Promise((resolve) => {
-    try {
-      const proxy = new URL(proxyServer);
-      const auth  = Buffer.from(`${username}:${password}`).toString('base64');
+    const res = await undiciFetch(
+      'https://ip-api.com/json/?fields=timezone,countryCode,city,lat,lon',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { dispatcher } as any,
+    );
 
-      const req = http.request(
-        {
-          hostname: proxy.hostname,
-          port:     parseInt(proxy.port) || 80,
-          // Full target URL as path — standard HTTP proxy forwarding
-          path:    'http://ip-api.com/json/?fields=timezone,countryCode,city',
-          method:  'GET',
-          headers: {
-            Host:                  'ip-api.com',
-            'Proxy-Authorization': `Basic ${auth}`,
-          },
-        },
-        (res) => {
-          let raw = '';
-          res.on('data', (chunk) => (raw += chunk));
-          res.on('end', () => {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const json: any = JSON.parse(raw);
-              const cc = json.countryCode || 'CH';
-              resolve({
-                timezone:    json.timezone    || fallback.timezone,
-                city:        json.city        || fallback.city,
-                countryCode: cc,
-                locale:      COUNTRY_LOCALE[cc] || 'en-US',
-              });
-            } catch {
-              resolve(fallback);
-            }
-          });
-        },
-      );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json: any = await res.json();
+    console.log('Proxy geo response:', json);
 
-      req.on('error', () => resolve(fallback));
-      req.setTimeout(8000, () => { req.destroy(); resolve(fallback); });
-      req.end();
-    } catch {
-      resolve(fallback);
-    }
-  });
+    if (
+      !json.timezone || !json.countryCode || !json.city ||
+      typeof json.lat !== 'number' || typeof json.lon !== 'number'
+    ) return null;
+
+    const cc = json.countryCode as string;
+    return {
+      timezone:    json.timezone,
+      city:        json.city,
+      countryCode: cc,
+      locale:      COUNTRY_LOCALE[cc] || 'en-US',
+      latitude:    json.lat,
+      longitude:   json.lon,
+    };
+  } catch (err) {
+    console.warn('Geo lookup error:', err);
+    return null;
+  }
 }
 
 // ─── Webshare API ─────────────────────────────────────────────────────────────
@@ -118,8 +263,8 @@ function fetchWebshareProxies(apiKey: string): Promise<ProxyEntry[]> {
   return new Promise((resolve) => {
     const options = {
       hostname: 'proxy.webshare.io',
-      path: '/api/v2/proxy/list/?mode=direct&page=1&page_size=100',
-      headers: { Authorization: `Token ${apiKey}` },
+      path:     '/api/v2/proxy/list/?mode=direct&page=1&page_size=100',
+      headers:  { Authorization: `Token ${apiKey}` },
     };
     https.get(options, (res) => {
       let raw = '';
@@ -150,8 +295,8 @@ export class FormFillerService {
   async run(): Promise<void> {
     const formUrl       = this.config.get<string>('formFiller.formUrl')!;
     const wsProxyServer = this.config.get<string>('formFiller.webshareProxyServer');
-    const wsUser        = this.config.get<string>('formFiller.webshareUser');
-    const wsPass        = this.config.get<string>('formFiller.websharePass');
+    const wsUser        = this.config.get<string>('formFiller.webshareUser')!;
+    const wsPass        = this.config.get<string>('formFiller.websharePass')!;
     const wsApiKey      = this.config.get<string>('formFiller.webshareApiKey');
 
     if (!wsUser || !wsPass) {
@@ -159,7 +304,11 @@ export class FormFillerService {
       return;
     }
 
-    // ── Proxy ──────────────────────────────────────────────────────────────
+    // ── Device profile ──────────────────────────────────────────────────────
+    const device = pickRandom(DEVICE_PROFILES);
+    console.log(`Device profile : ${device.name} (${device.engine})`);
+
+    // ── Proxy server ────────────────────────────────────────────────────────
     let proxyServer: string;
     if (wsProxyServer) {
       proxyServer = wsProxyServer;
@@ -169,47 +318,109 @@ export class FormFillerService {
       proxyServer     = `http://${proxy.host}:${proxy.port}`;
     }
 
-    // ── Detect actual timezone/locale from the proxy IP ────────────────────
-    console.log('Detecting proxy location...');
-    const geo = await getProxyGeoInfo(proxyServer, wsUser, wsPass);
+    // ── Build local anonymous tunnel first ─────────────────────────────────
+    const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
+    const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
 
-    // ── Random window size ─────────────────────────────────────────────────
-    const res = pickRandom(RESOLUTIONS);
+    // ── Geo lookup through the tunnel (no auth needed) ──────────────────────
+    console.log('Detecting proxy location...');
+    const geo = await getProxyGeoInfo(localProxy);
+    if (!geo) {
+      console.warn('Geo lookup failed — timezone/locale/geolocation will NOT be set.');
+    }
 
     console.log('─────────────────────────────────────────');
-    console.log(`Target URL   : ${formUrl}`);
-    console.log(`Proxy        : ${proxyServer}`);
-    console.log(`Location     : ${geo.city}, ${geo.countryCode}`);
-    console.log(`Timezone     : ${geo.timezone}`);
-    console.log(`Locale       : ${geo.locale}`);
-    console.log(`Screen       : ${res.w}x${res.h}`);
+    console.log(`Target URL     : ${formUrl}`);
+    console.log(`Proxy          : ${proxyServer}`);
+    console.log(`Local tunnel   : ${localProxy}`);
+    if (geo) {
+      console.log(`Location       : ${geo.city}, ${geo.countryCode}`);
+      console.log(`Timezone       : ${geo.timezone}`);
+      console.log(`Locale         : ${geo.locale}`);
+      console.log(`Geolocation    : ${geo.latitude}, ${geo.longitude}`);
+    }
+    console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
     console.log('─────────────────────────────────────────');
 
     try {
-      const browser = await chromium.launch({
+      const browserEngine = device.engine === 'webkit' ? webkit : chromium;
+      
+      const commonArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--ignore-certificate-errors',
+      ];
+
+      const chromiumArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--ignore-certificate-errors-spki-list',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--force-webrtc-ip-handling-policy=default_public_interface_only',
+        `--window-size=${device.screen.width},${device.screen.height}`,
+      ];
+
+      const launchArgs = device.engine === 'chromium' 
+        ? [...commonArgs, ...chromiumArgs] 
+        : commonArgs;
+
+      const browser = await browserEngine.launch({
         headless: false,
-        proxy: { server: proxyServer, username: wsUser, password: wsPass },
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          // Removes navigator.webdriver at native level — no JS patch needed
-          '--disable-blink-features=AutomationControlled',
-          '--disable-infobars',
-          `--window-size=${res.w},${res.h}`,
-          '--ignore-certificate-errors',
-          '--ignore-certificate-errors-spki-list',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-        ],
+        proxy:    { server: localProxy },
+        args:     launchArgs,
       });
 
-      // No JS overrides at all — zero patches = nothing for "Masking detected" to find.
-      // Timezone and locale are set at context level (not via JS), which is undetectable.
       const context = await browser.newContext({
-        viewport:          { width: res.w, height: res.h },
+        viewport:          device.viewport,
+        userAgent:         device.userAgent,
+        isMobile:          device.isMobile,
+        hasTouch:          device.hasTouch,
         ignoreHTTPSErrors: true,
-        locale:            geo.locale,
-        timezoneId:        geo.timezone,
+        ...(geo ? {
+          locale:      geo.locale,
+          timezoneId:  geo.timezone,
+          geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
+          permissions: ['geolocation'],
+        } : {}),
+      });
+
+      // We no longer need the complex manual init script because stealth plugin handles most of it.
+      // However, we can add a small script to override specific hardware properties if needed,
+      // matching the device profile more closely than stealth might default to.
+      
+      await context.addInitScript((data) => {
+        // Override hardware concurrency and memory if they differ from host
+        try {
+          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => data.hardwareConcurrency });
+        } catch {}
+        try {
+          if (data.deviceMemory) {
+             // @ts-ignore
+             Object.defineProperty(navigator, 'deviceMemory', { get: () => data.deviceMemory });
+          }
+        } catch {}
+
+        // Override WebGL vendor/renderer to match the profile
+        const _vendor = data.gpu.vendor;
+        const _renderer = data.gpu.renderer;
+        const _patchGL = (Ctx: any) => {
+          try {
+            const _orig = Ctx.prototype.getParameter;
+            Ctx.prototype.getParameter = function (p: any) {
+              // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
+              if (p === 0x9245) return _vendor;
+              if (p === 0x9246) return _renderer;
+              return _orig.call(this, p);
+            };
+          } catch {}
+        };
+        try { _patchGL(WebGLRenderingContext); } catch {}
+        try { _patchGL(WebGL2RenderingContext); } catch {}
+
+      }, { 
+        hardwareConcurrency: device.hardwareConcurrency, 
+        deviceMemory: device.deviceMemory,
+        gpu: device.gpu 
       });
 
       const page = await context.newPage();
@@ -226,6 +437,8 @@ export class FormFillerService {
       });
     } catch (error) {
       console.error('Error launching browser:', error);
+    } finally {
+      await proxyChain.closeAnonymizedProxy(localProxy, true);
     }
   }
 }
