@@ -233,97 +233,106 @@ export class FormFillerService {
       return;
     }
 
-      // ─── Device profile ──────────────────────────────────────────────────────
-      const device = pickRandom(DEVICE_PROFILES);
-      console.log(`Device profile : ${device.name} (${device.engine})`);
+    // ─── Device profile ──────────────────────────────────────────────────────
+    const device = pickRandom(DEVICE_PROFILES);
+    console.log(`Device profile : ${device.name} (${device.engine})`);
 
-      // ─── Proxy server ────────────────────────────────────────────────────────
-      let proxyServer: string;
-      if (wsProxyServer) {
-        proxyServer = wsProxyServer;
-      } else {
-        const proxyList = wsApiKey ? await fetchWebshareProxies(wsApiKey) : FALLBACK_PROXIES;
-        const proxy     = pickRandom(proxyList);
-        proxyServer     = `http://${proxy.host}:${proxy.port}`;
-      }
+    // ─── Proxy server ────────────────────────────────────────────────────────
+    let proxyServer: string;
+    if (wsProxyServer) {
+      proxyServer = wsProxyServer;
+    } else {
+      const proxyList = wsApiKey ? await fetchWebshareProxies(wsApiKey) : FALLBACK_PROXIES;
+      const proxy     = pickRandom(proxyList);
+      proxyServer     = `http://${proxy.host}:${proxy.port}`;
+    }
 
-      // ── Build local anonymous tunnel first ─────────────────────────────────
-      const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
-      const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
+    // ── Build local anonymous tunnel first ─────────────────────────────────
+    const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
+    const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
 
-      // ── Geo lookup through the tunnel (no auth needed) ──────────────────────
-      console.log('Detecting proxy location...');
-      const geo = await getProxyGeoInfo(localProxy);
-      
-      // Fallback if geo lookup fails to avoid "Timezone spoofed" (mismatch between system and IP)
-      // We default to a common timezone if we can't detect it, but this might still flag.
-      // Better to warn.
-      if (!geo) {
-        console.warn('⚠️ Geo lookup failed! Timezone/Locale will default to system, which may trigger "Timezone spoofed".');
-      }
+    // ── Geo lookup through the tunnel (no auth needed) ──────────────────────
+    console.log('Detecting proxy location...');
+    const geo = await getProxyGeoInfo(localProxy);
+    
+    // Fallback if geo lookup fails to avoid "Timezone spoofed" (mismatch between system and IP)
+    // We default to a common timezone if we can't detect it, but this might still flag.
+    // Better to warn.
+    if (!geo) {
+      console.warn('⚠️ Geo lookup failed! Timezone/Locale will default to system, which may trigger "Timezone spoofed".');
+    }
 
-      console.log('─────────────────────────────────────────');
-      console.log(`Target URL     : ${formUrl}`);
-      console.log(`Proxy          : ${proxyServer}`);
-      console.log(`Local tunnel   : ${localProxy}`);
-      if (geo) {
-        console.log(`Location       : ${geo.city}, ${geo.countryCode}`);
-        console.log(`Timezone       : ${geo.timezone}`);
-        console.log(`Locale         : ${geo.locale}`);
-        console.log(`Geolocation    : ${geo.latitude}, ${geo.longitude}`);
-      }
-      console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
-      console.log('─────────────────────────────────────────');
+    console.log('─────────────────────────────────────────');
+    console.log(`Target URL     : ${formUrl}`);
+    console.log(`Proxy          : ${proxyServer}`);
+    console.log(`Local tunnel   : ${localProxy}`);
+    if (geo) {
+      console.log(`Location       : ${geo.city}, ${geo.countryCode}`);
+      console.log(`Timezone       : ${geo.timezone}`);
+      console.log(`Locale         : ${geo.locale}`);
+      console.log(`Geolocation    : ${geo.latitude}, ${geo.longitude}`);
+    }
+    console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
+    console.log('─────────────────────────────────────────');
 
-      try {
-        const commonArgs = [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--ignore-certificate-errors',
-        ];
-  
-        const chromiumArgs = [
-          '--disable-blink-features=AutomationControlled',
-          '--disable-infobars',
-          '--ignore-certificate-errors-spki-list',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--force-webrtc-ip-handling-policy=default_public_interface_only',
-          `--window-size=${device.screen.width},${device.screen.height}`,
-        ];
-  
-        const launchArgs = [...commonArgs, ...chromiumArgs];
-  
-        const browser = await chromium.launch({
-          headless: false,
-          proxy:    { server: localProxy },
-          args:     launchArgs,
-        });
-  
-        const context = await browser.newContext({
-          viewport:          device.viewport,
-          userAgent:         device.userAgent,
-          isMobile:          device.isMobile,
-          hasTouch:          device.hasTouch,
-          ignoreHTTPSErrors: true,
-          // CRITICAL: Set timezone and locale to match the proxy IP
-          ...(geo ? {
-            locale:      geo.locale,
-            timezoneId:  geo.timezone,
-            // REMOVED: Geolocation spoofing.
-            // Providing exact lat/lon from IP-API (city center) often flags as "Timezone spoofed"
-            // or "Location spoofed" because it's too precise or doesn't match the IP's fuzzy range.
-            // By removing this, we force the site to rely on IP-based location, which matches our timezone.
-          } : {}),
-        });
-  
-        // REMOVED: Manual addInitScript for hardware/WebGL spoofing.
-        // The manual overrides (especially WebGL) were causing "Masking detected".
-        // We rely on the device profile matching the engine (Chromium vs WebKit)
-        // and the stealth plugin to handle the rest.
-        // If specific hardware spoofing is needed, it must be done with deep native hooks,
-        // but often "less is more" for avoiding masking detection.
+    try {
+      const commonArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--ignore-certificate-errors',
+      ];
 
-        const page = await context.newPage();
+      const chromiumArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--ignore-certificate-errors-spki-list',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--force-webrtc-ip-handling-policy=default_public_interface_only',
+        `--window-size=${device.screen.width},${device.screen.height}`,
+      ];
+
+      const launchArgs = [...commonArgs, ...chromiumArgs];
+
+      const browser = await chromium.launch({
+        headless: false,
+        proxy:    { server: localProxy },
+        args:     launchArgs,
+      });
+
+      // Randomize viewport slightly to mimic real window borders/taskbar
+      // e.g. 1920x1080 screen -> 1920x(1080 - 40 to 120)
+      const viewportHeight = device.screen.height - Math.floor(Math.random() * 80 + 40);
+      const viewport = { width: device.screen.width, height: viewportHeight };
+
+      const context = await browser.newContext({
+        viewport:          viewport,
+        userAgent:         device.userAgent,
+        isMobile:          device.isMobile,
+        hasTouch:          device.hasTouch,
+        ignoreHTTPSErrors: true,
+        // CRITICAL: Set timezone and locale to match the proxy IP
+        ...(geo ? {
+          locale:      geo.locale,
+          timezoneId:  geo.timezone,
+          // REMOVED: Geolocation spoofing.
+          // Providing exact lat/lon from IP-API (city center) often flags as "Timezone spoofed"
+          // or "Location spoofed" because it's too precise or doesn't match the IP's fuzzy range.
+          // By removing this, we force the site to rely on IP-based location, which matches our timezone.
+        } : {}),
+      });
+
+      // Minimal evasion: Remove webdriver property
+      await context.addInitScript(() => {
+        try {
+          // @ts-ignore
+          if (navigator.webdriver) {
+            // @ts-ignore
+            delete Object.getPrototypeOf(navigator).webdriver;
+          }
+        } catch {}
+      });
+
+      const page = await context.newPage();
 
       console.log('Navigating to URL...');
       await page.goto(formUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });

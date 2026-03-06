@@ -256,8 +256,10 @@ let FormFillerService = class FormFillerService {
                 proxy: { server: localProxy },
                 args: launchArgs,
             });
+            const viewportHeight = device.screen.height - Math.floor(Math.random() * 80 + 40);
+            const viewport = { width: device.screen.width, height: viewportHeight };
             const context = await browser.newContext({
-                viewport: device.viewport,
+                viewport: viewport,
                 userAgent: device.userAgent,
                 isMobile: device.isMobile,
                 hasTouch: device.hasTouch,
@@ -266,6 +268,14 @@ let FormFillerService = class FormFillerService {
                     locale: geo.locale,
                     timezoneId: geo.timezone,
                 } : {}),
+            });
+            await context.addInitScript(() => {
+                try {
+                    if (navigator.webdriver) {
+                        delete Object.getPrototypeOf(navigator).webdriver;
+                    }
+                }
+                catch { }
             });
             const page = await context.newPage();
             console.log('Navigating to URL...');
