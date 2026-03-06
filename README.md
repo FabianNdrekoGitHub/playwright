@@ -1,87 +1,159 @@
-# Form Filler App (NestJS + TypeScript)
+# Form Filler App (NestJS + Playwright)
 
-Fills a web form automatically using rows from a SQLite database. Each run uses a **different device** (Samsung, iPhone, Dell PC, etc.) and a **different proxy** (different IP/location) so submissions look like they come from different users and places.
+Opens a browser with **proxy tunneling** and **device fingerprint rotation** so you can fill web forms manually while appearing as a different user each time.
 
-Built with **NestJS** and **TypeScript** for structure, dependency injection, and maintainability.
+Built with **NestJS v10**, **Playwright**, and **TypeScript**.
 
-## Setup
+---
 
-1. **Install dependencies**
-   ```bash
-   npm install
-   npx playwright install chromium
-   ```
+## Prerequisites
 
-2. **Configure your form and database**
-   - Copy `.env.example` to `.env` and set:
-     - `FORM_URL` – URL of the form page
-     - `FIELD_MAPPING_JSON` – JSON object mapping form selectors to DB column names
-     - `SUBMIT_SELECTOR` – CSS selector for the submit button
-     - Optionally `SUCCESS_INDICATOR` – selector that appears after successful submit
-   - If your form has different field names, add columns to the `submissions` table (see `src/database/database.service.ts`) and update the config in `src/config/form-filler.config.ts` or `.env`.
+Install the following on your PC before cloning/running this project:
 
-3. **Initialize the database and add data**
-   ```bash
-   npm run init-db
-   ```
-   This creates `data/submissions.db` and inserts sample rows. Edit `scripts/init-db.ts` to add your own rows or import from CSV.
+### 1. Node.js (v18 or later)
 
-4. **Proxies (optional)**
-   - Set `PROXY_LIST` in `.env` (comma-separated URLs), or
-   - Set `PROXY_LIST_PATH` to a file with one proxy per line.
-   - Format: `http://host:port` or `http://user:pass@host:port`
+Download and install from [https://nodejs.org](https://nodejs.org) (LTS recommended).
 
-## Run
+Verify after install:
 
-**Run the form filler** (processes all pending rows, then exits):
+```bash
+node -v    # should print v18.x.x or higher
+npm -v     # should print 9.x.x or higher
+```
+
+### 2. Git (optional, for cloning)
+
+Download from [https://git-scm.com](https://git-scm.com) if you want to clone the repo. Otherwise just copy the project folder.
+
+---
+
+## Installation
+
+### 1. Install npm dependencies
+
+```bash
+npm install
+```
+
+### 2. Install Playwright browsers
+
+Playwright needs to download browser binaries (Chromium). Run:
+
+```bash
+npx playwright install chromium
+```
+
+On **Linux**, you may also need system dependencies:
+
+```bash
+npx playwright install-deps chromium
+```
+
+### 3. Configure environment variables
+
+Copy the example env file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your settings:
+
+| Variable                | Required | Description                                                                 |
+|-------------------------|----------|-----------------------------------------------------------------------------|
+| `FORM_URL`              | Yes      | The URL to open in the browser (e.g. `https://example.com/my-form`)         |
+| `WEBSHARE_PROXY_SERVER` | No       | Proxy server address (e.g. `http://geo.iproyal.com:12321`). If not set, falls back to the built-in proxy list or the Webshare API. |
+| `WEBSHARE_USERNAME`     | Yes      | Proxy username                                                              |
+| `WEBSHARE_PASSWORD`     | Yes      | Proxy password                                                              |
+| `WEBSHARE_API_KEY`      | No       | Webshare API key (used to fetch proxy list from Webshare API if no `WEBSHARE_PROXY_SERVER` is set) |
+
+---
+
+## Usage
+
+### Build and run (recommended)
 
 ```bash
 npm run start:fill
 ```
 
-Or build once, then run:
+This builds the TypeScript project and immediately runs the form filler.
+
+### Run without rebuilding
+
+If you've already built once and haven't changed any code:
+
+```bash
+npm run fill
+```
+
+### Build only
 
 ```bash
 npm run build
-npm run fill   # runs node dist/src/run-form-filler.js
 ```
 
-**Start the NestJS HTTP server** (optional; for future API endpoints):
+### Start NestJS HTTP server (optional)
 
 ```bash
 npm run start
-# or with watch: npm run start:dev
+# or with hot reload:
+npm run start:dev
 ```
 
-The form filler will:
-1. Take the next **pending** row from the database
-2. Pick the next **device** (Samsung → iPhone → Dell PC → …) and next **proxy**
-3. Open Chrome with that device profile and proxy, go to the form, fill it, and submit
-4. Mark the row as **success** or **failed**
-5. Wait a random delay (default 30–60 seconds), then repeat until no pending rows remain
+---
 
-## Project structure (NestJS)
+## What it does
 
-- `src/main.ts` – HTTP server entry (optional)
-- `src/run-form-filler.ts` – Form filler CLI entry (no HTTP)
-- `src/app.module.ts` – Root module
-- `src/config/form-filler.config.ts` – Form URL, field mapping, timeouts, proxy paths
-- `src/database/` – `DatabaseModule`, `DatabaseService` (SQLite, get next row, mark success/failed)
-- `src/form-filler/` – `FormFillerModule`, `FormFillerService` (Playwright loop), `DevicesService`, `ProxiesService`
-- `scripts/init-db.ts` – Create DB table and optional sample data
-- `data/submissions.db` – SQLite DB (created on first run or `npm run init-db`)
+1. Picks a **random device profile** (desktop/laptop with different screen sizes, GPUs, user agents)
+2. Creates an **anonymous proxy tunnel** using your configured proxy credentials
+3. **Detects the proxy's geolocation** (timezone, locale, country) so the browser fingerprint matches the IP
+4. Launches a **Chromium browser** with anti-detection settings (no webdriver flag, realistic viewport, matching timezone/locale)
+5. Navigates to your `FORM_URL` — you fill the form manually
+6. When you close the browser window, the process exits and cleans up the proxy tunnel
 
-## Customizing
+---
 
-- **Form fields**: Edit `FIELD_MAPPING_JSON` in `.env` or `src/config/form-filler.config.ts`: keys = CSS selectors, values = column names in `submissions`.
-- **DB columns**: Add columns in `src/database/database.service.ts` (schema) and in `SubmissionRow`, then add matching entries to the field mapping.
-- **Devices**: Edit `src/form-filler/devices.service.ts` to add or change device profiles.
-- **Delays**: Adjust `DELAY_MIN_MS` and `DELAY_MAX_MS` in `.env`.
+## Project structure
 
-## Retrying failed rows
+```
+src/
+  main.ts                            # NestJS HTTP server entry (optional)
+  run-form-filler.ts                 # CLI entry point (no HTTP server)
+  app.module.ts                      # Root NestJS module
+  config/
+    form-filler.config.ts            # Environment variable mapping
+  form-filler/
+    form-filler.module.ts            # FormFiller NestJS module
+    form-filler.service.ts           # Core logic: proxy, device, browser launch
+```
 
-Use `DatabaseService.resetToPending(id)` from a Nest context, or run SQL:
+---
 
-```sql
-UPDATE submissions SET status = 'pending', error_message = NULL WHERE id = ?;
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `net::ERR_TUNNEL_CONNECTION_FAILED` | Proxy is unreachable or account expired | Check proxy credentials and account balance |
+| `Geo lookup failed` | Proxy not forwarding requests | Same as above — verify the proxy is active |
+| `npx playwright install` hangs | Network/firewall blocking downloads | Try from a different network or use `--with-deps` |
+| `WEBSHARE_USERNAME and WEBSHARE_PASSWORD must be set` | Missing `.env` values | Make sure `.env` has both `WEBSHARE_USERNAME` and `WEBSHARE_PASSWORD` |
+
+---
+
+## Quick start (fresh PC summary)
+
+```bash
+# 1. Install Node.js v18+ from https://nodejs.org
+
+# 2. Clone or copy the project, then:
+cd form-filler-app
+npm install
+npx playwright install chromium
+
+# 3. Create .env from example and fill in your proxy credentials:
+cp .env.example .env
+
+# 4. Run:
+npm run start:fill
 ```
