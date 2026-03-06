@@ -1,3 +1,4 @@
+import * as http  from 'http';
 import * as https from 'https';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -120,6 +121,60 @@ const COUNTRY_LOCALE: Record<string, string> = {
 
 function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Directly tests the upstream proxy (bypassing proxy-chain) to detect
+ * HTTP-level errors like 402 Payment Required or 407 Auth Required before
+ * wasting time creating a browser session.
+ */
+async function checkProxyHealth(
+  upstreamProxyUrl: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  return new Promise((resolve) => {
+    const parsed = new URL(upstreamProxyUrl);
+    const auth   = Buffer.from(`${parsed.username}:${parsed.password}`).toString('base64');
+
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port:     Number(parsed.port),
+        method:   'GET',
+        path:     'http://ip-api.com/json',
+        headers:  {
+          Host:                 'ip-api.com',
+          'Proxy-Authorization': `Basic ${auth}`,
+        },
+      },
+      (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+          resolve({ ok: true });
+        } else if (res.statusCode === 402) {
+          resolve({
+            ok:     false,
+            reason: 'Proxy returned 402 Payment Required — top up your account on the IPRoyal dashboard (https://iproyal.com).',
+          });
+        } else if (res.statusCode === 407) {
+          resolve({
+            ok:     false,
+            reason: 'Proxy returned 407 Proxy Auth Required — verify WEBSHARE_USERNAME / WEBSHARE_PASSWORD in .env.',
+          });
+        } else {
+          resolve({ ok: false, reason: `Proxy returned unexpected status ${res.statusCode}` });
+        }
+      },
+    );
+
+    req.on('error', (err) =>
+      resolve({ ok: false, reason: `Proxy connection error: ${err.message}` }),
+    );
+    req.setTimeout(10_000, () => {
+      req.destroy();
+      resolve({ ok: false, reason: 'Proxy health check timed out after 10 s.' });
+    });
+    req.end();
+  });
 }
 
 /**
@@ -247,8 +302,19 @@ export class FormFillerService {
       proxyServer     = `http://${proxy.host}:${proxy.port}`;
     }
 
-    // ── Build local anonymous tunnel first ─────────────────────────────────
+    // ── Build upstream URL with credentials ────────────────────────────────
     const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
+
+    // ── Proxy health check (direct, no tunnel) ──────────────────────────────
+    console.log('Checking proxy health...');
+    const health = await checkProxyHealth(upstreamUrl);
+    if (!health.ok) {
+      console.error(`❌ Proxy unusable: ${health.reason}`);
+      return;
+    }
+    console.log('Proxy health check passed ✓');
+
+    // ── Build local anonymous tunnel ────────────────────────────────────────
     const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
 
     // ── Geo lookup through the tunnel (no auth needed) ──────────────────────

@@ -43,6 +43,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FormFillerService = void 0;
+const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
@@ -124,6 +125,48 @@ const COUNTRY_LOCALE = {
 };
 function pickRandom(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
+}
+async function checkProxyHealth(upstreamProxyUrl) {
+    return new Promise((resolve) => {
+        const parsed = new URL(upstreamProxyUrl);
+        const auth = Buffer.from(`${parsed.username}:${parsed.password}`).toString('base64');
+        const req = http.request({
+            hostname: parsed.hostname,
+            port: Number(parsed.port),
+            method: 'GET',
+            path: 'http://ip-api.com/json',
+            headers: {
+                Host: 'ip-api.com',
+                'Proxy-Authorization': `Basic ${auth}`,
+            },
+        }, (res) => {
+            res.resume();
+            if (res.statusCode === 200) {
+                resolve({ ok: true });
+            }
+            else if (res.statusCode === 402) {
+                resolve({
+                    ok: false,
+                    reason: 'Proxy returned 402 Payment Required — top up your account on the IPRoyal dashboard (https://iproyal.com).',
+                });
+            }
+            else if (res.statusCode === 407) {
+                resolve({
+                    ok: false,
+                    reason: 'Proxy returned 407 Proxy Auth Required — verify WEBSHARE_USERNAME / WEBSHARE_PASSWORD in .env.',
+                });
+            }
+            else {
+                resolve({ ok: false, reason: `Proxy returned unexpected status ${res.statusCode}` });
+            }
+        });
+        req.on('error', (err) => resolve({ ok: false, reason: `Proxy connection error: ${err.message}` }));
+        req.setTimeout(10_000, () => {
+            req.destroy();
+            resolve({ ok: false, reason: 'Proxy health check timed out after 10 s.' });
+        });
+        req.end();
+    });
 }
 async function getProxyGeoInfo(localProxyUrl) {
     const dispatcher = new undici_1.ProxyAgent({ uri: localProxyUrl });
@@ -218,6 +261,13 @@ let FormFillerService = class FormFillerService {
             proxyServer = `http://${proxy.host}:${proxy.port}`;
         }
         const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
+        console.log('Checking proxy health...');
+        const health = await checkProxyHealth(upstreamUrl);
+        if (!health.ok) {
+            console.error(`❌ Proxy unusable: ${health.reason}`);
+            return;
+        }
+        console.log('Proxy health check passed ✓');
         const localProxy = await proxyChain.anonymizeProxy(upstreamUrl);
         console.log('Detecting proxy location...');
         const geo = await getProxyGeoInfo(localProxy);
