@@ -1,14 +1,9 @@
 import * as https from 'https';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { chromium, webkit } from 'playwright-extra';
-import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'playwright';
 import * as proxyChain from 'proxy-chain';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
-
-// Register stealth plugin
-chromium.use(stealthPlugin());
-webkit.use(stealthPlugin());
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,103 +32,12 @@ interface DeviceProfile {
   hardwareConcurrency: number;
   deviceMemory:        number;
   gpu:                 { vendor: string; renderer: string };
-  engine:              'chromium' | 'webkit';
+  engine:              'chromium';
 }
 
 // ─── Device profiles ──────────────────────────────────────────────────────────
 
 const DEVICE_PROFILES: DeviceProfile[] = [
-  {
-    name:      'iPhone 15 Pro',
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-    platform:  'iPhone',
-    viewport:  { width: 393, height: 852 },
-    screen:    { width: 393, height: 852 },
-    isMobile:  true,
-    hasTouch:  true,
-    hardwareConcurrency: 6,
-    deviceMemory: 6,
-    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-    engine:    'webkit',
-  },
-  {
-    name:      'iPhone 14',
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    platform:  'iPhone',
-    viewport:  { width: 390, height: 844 },
-    screen:    { width: 390, height: 844 },
-    isMobile:  true,
-    hasTouch:  true,
-    hardwareConcurrency: 6,
-    deviceMemory: 4,
-    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-    engine:    'webkit',
-  },
-  {
-    name:      'Samsung Galaxy S24',
-    userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-    platform:  'Linux armv81',
-    viewport:  { width: 412, height: 915 },
-    screen:    { width: 412, height: 915 },
-    isMobile:  true,
-    hasTouch:  true,
-    hardwareConcurrency: 8,
-    deviceMemory: 8,
-    gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 750' },
-    engine:    'chromium',
-  },
-  {
-    name:      'Samsung Galaxy S23',
-    userAgent: 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-    platform:  'Linux armv81',
-    viewport:  { width: 393, height: 851 },
-    screen:    { width: 393, height: 851 },
-    isMobile:  true,
-    hasTouch:  true,
-    hardwareConcurrency: 8,
-    deviceMemory: 8,
-    gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 740' },
-    engine:    'chromium',
-  },
-  {
-    name:      'iPad Pro 12.9"',
-    userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-    platform:  'iPad',
-    viewport:  { width: 1024, height: 1366 },
-    screen:    { width: 1024, height: 1366 },
-    isMobile:  false,
-    hasTouch:  true,
-    hardwareConcurrency: 8,
-    deviceMemory: 8,
-    gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-    engine:    'webkit',
-  },
-  {
-    name:      'MacBook Pro 14"',
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Safari/537.36',
-    platform:  'MacIntel',
-    viewport:  { width: 1512, height: 982 },
-    screen:    { width: 1512, height: 982 },
-    isMobile:  false,
-    hasTouch:  false,
-    hardwareConcurrency: 12,
-    deviceMemory: 16,
-    gpu: { vendor: 'Apple', renderer: 'Apple M3 Pro' },
-    engine:    'chromium',
-  },
-  {
-    name:      'MacBook Air M2',
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-    platform:  'MacIntel',
-    viewport:  { width: 1440, height: 900 },
-    screen:    { width: 1440, height: 900 },
-    isMobile:  false,
-    hasTouch:  false,
-    hardwareConcurrency: 8,
-    deviceMemory: 8,
-    gpu: { vendor: 'Apple', renderer: 'Apple M2' },
-    engine:    'chromium',
-  },
   {
     name:      'Windows Desktop (RTX 3060)',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -224,37 +128,62 @@ function pickRandom<T>(arr: T[]): T {
  * so we just point undici at it and make a plain HTTPS request.
  */
 async function getProxyGeoInfo(localProxyUrl: string): Promise<GeoInfo | null> {
+  const dispatcher = new ProxyAgent({ uri: localProxyUrl });
+  
+  // Try primary provider (ip-api.com)
   try {
-    const dispatcher = new ProxyAgent({ uri: localProxyUrl });
-
     const res = await undiciFetch(
-      'https://ip-api.com/json/?fields=timezone,countryCode,city,lat,lon',
+      'http://ip-api.com/json/?fields=status,timezone,countryCode,city,lat,lon',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { dispatcher } as any,
     );
-
+    
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json: any = await res.json();
-    console.log('Proxy geo response:', json);
+    console.log('Proxy geo response (ip-api):', json);
 
-    if (
-      !json.timezone || !json.countryCode || !json.city ||
-      typeof json.lat !== 'number' || typeof json.lon !== 'number'
-    ) return null;
-
-    const cc = json.countryCode as string;
-    return {
-      timezone:    json.timezone,
-      city:        json.city,
-      countryCode: cc,
-      locale:      COUNTRY_LOCALE[cc] || 'en-US',
-      latitude:    json.lat,
-      longitude:   json.lon,
-    };
+    if (json.status === 'success' && json.timezone && json.countryCode) {
+      return {
+        timezone:    json.timezone,
+        city:        json.city,
+        countryCode: json.countryCode,
+        locale:      COUNTRY_LOCALE[json.countryCode] || 'en-US',
+        latitude:    json.lat,
+        longitude:   json.lon,
+      };
+    }
   } catch (err) {
-    console.warn('Geo lookup error:', err);
-    return null;
+    console.warn('Primary geo lookup failed:', err.message);
   }
+
+  // Fallback provider (ipwho.is)
+  try {
+    console.log('Trying fallback geo provider (ipwho.is)...');
+    const res = await undiciFetch(
+      'https://ipwho.is/',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { dispatcher } as any,
+    );
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json: any = await res.json();
+    console.log('Proxy geo response (ipwho.is):', json);
+
+    if (json.success && json.timezone && json.country_code) {
+      return {
+        timezone:    json.timezone.id,
+        city:        json.city,
+        countryCode: json.country_code,
+        locale:      COUNTRY_LOCALE[json.country_code] || 'en-US',
+        latitude:    json.latitude,
+        longitude:   json.longitude,
+      };
+    }
+  } catch (err) {
+    console.warn('Fallback geo lookup failed:', err.message);
+  }
+
+  return null;
 }
 
 // ─── Webshare API ─────────────────────────────────────────────────────────────
@@ -347,8 +276,6 @@ export class FormFillerService {
       console.log('─────────────────────────────────────────');
 
       try {
-        const browserEngine = device.engine === 'webkit' ? webkit : chromium;
-        
         const commonArgs = [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -364,11 +291,9 @@ export class FormFillerService {
           `--window-size=${device.screen.width},${device.screen.height}`,
         ];
   
-        const launchArgs = device.engine === 'chromium' 
-          ? [...commonArgs, ...chromiumArgs] 
-          : commonArgs;
+        const launchArgs = [...commonArgs, ...chromiumArgs];
   
-        const browser = await browserEngine.launch({
+        const browser = await chromium.launch({
           headless: false,
           proxy:    { server: localProxy },
           args:     launchArgs,
@@ -384,8 +309,10 @@ export class FormFillerService {
           ...(geo ? {
             locale:      geo.locale,
             timezoneId:  geo.timezone,
-            geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
-            permissions: ['geolocation'],
+            // REMOVED: Geolocation spoofing.
+            // Providing exact lat/lon from IP-API (city center) often flags as "Timezone spoofed"
+            // or "Location spoofed" because it's too precise or doesn't match the IP's fuzzy range.
+            // By removing this, we force the site to rely on IP-based location, which matches our timezone.
           } : {}),
         });
   

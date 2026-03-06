@@ -41,112 +41,15 @@ var __importStar = (this && this.__importStar) || (function () {
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FormFillerService = void 0;
 const https = __importStar(require("https"));
 const common_1 = require("@nestjs/common");
 const config_1 = require("@nestjs/config");
-const playwright_extra_1 = require("playwright-extra");
-const puppeteer_extra_plugin_stealth_1 = __importDefault(require("puppeteer-extra-plugin-stealth"));
+const playwright_1 = require("playwright");
 const proxyChain = __importStar(require("proxy-chain"));
 const undici_1 = require("undici");
-playwright_extra_1.chromium.use((0, puppeteer_extra_plugin_stealth_1.default)());
-playwright_extra_1.webkit.use((0, puppeteer_extra_plugin_stealth_1.default)());
 const DEVICE_PROFILES = [
-    {
-        name: 'iPhone 15 Pro',
-        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-        platform: 'iPhone',
-        viewport: { width: 393, height: 852 },
-        screen: { width: 393, height: 852 },
-        isMobile: true,
-        hasTouch: true,
-        hardwareConcurrency: 6,
-        deviceMemory: 6,
-        gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-        engine: 'webkit',
-    },
-    {
-        name: 'iPhone 14',
-        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-        platform: 'iPhone',
-        viewport: { width: 390, height: 844 },
-        screen: { width: 390, height: 844 },
-        isMobile: true,
-        hasTouch: true,
-        hardwareConcurrency: 6,
-        deviceMemory: 4,
-        gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-        engine: 'webkit',
-    },
-    {
-        name: 'Samsung Galaxy S24',
-        userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-        platform: 'Linux armv81',
-        viewport: { width: 412, height: 915 },
-        screen: { width: 412, height: 915 },
-        isMobile: true,
-        hasTouch: true,
-        hardwareConcurrency: 8,
-        deviceMemory: 8,
-        gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 750' },
-        engine: 'chromium',
-    },
-    {
-        name: 'Samsung Galaxy S23',
-        userAgent: 'Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        platform: 'Linux armv81',
-        viewport: { width: 393, height: 851 },
-        screen: { width: 393, height: 851 },
-        isMobile: true,
-        hasTouch: true,
-        hardwareConcurrency: 8,
-        deviceMemory: 8,
-        gpu: { vendor: 'Qualcomm', renderer: 'Adreno (TM) 740' },
-        engine: 'chromium',
-    },
-    {
-        name: 'iPad Pro 12.9"',
-        userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
-        platform: 'iPad',
-        viewport: { width: 1024, height: 1366 },
-        screen: { width: 1024, height: 1366 },
-        isMobile: false,
-        hasTouch: true,
-        hardwareConcurrency: 8,
-        deviceMemory: 8,
-        gpu: { vendor: 'Apple', renderer: 'Apple GPU' },
-        engine: 'webkit',
-    },
-    {
-        name: 'MacBook Pro 14"',
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Safari/537.36',
-        platform: 'MacIntel',
-        viewport: { width: 1512, height: 982 },
-        screen: { width: 1512, height: 982 },
-        isMobile: false,
-        hasTouch: false,
-        hardwareConcurrency: 12,
-        deviceMemory: 16,
-        gpu: { vendor: 'Apple', renderer: 'Apple M3 Pro' },
-        engine: 'chromium',
-    },
-    {
-        name: 'MacBook Air M2',
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        platform: 'MacIntel',
-        viewport: { width: 1440, height: 900 },
-        screen: { width: 1440, height: 900 },
-        isMobile: false,
-        hasTouch: false,
-        hardwareConcurrency: 8,
-        deviceMemory: 8,
-        gpu: { vendor: 'Apple', renderer: 'Apple M2' },
-        engine: 'chromium',
-    },
     {
         name: 'Windows Desktop (RTX 3060)',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -223,28 +126,45 @@ function pickRandom(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 async function getProxyGeoInfo(localProxyUrl) {
+    const dispatcher = new undici_1.ProxyAgent({ uri: localProxyUrl });
     try {
-        const dispatcher = new undici_1.ProxyAgent({ uri: localProxyUrl });
-        const res = await (0, undici_1.fetch)('https://ip-api.com/json/?fields=timezone,countryCode,city,lat,lon', { dispatcher });
+        const res = await (0, undici_1.fetch)('http://ip-api.com/json/?fields=status,timezone,countryCode,city,lat,lon', { dispatcher });
         const json = await res.json();
-        console.log('Proxy geo response:', json);
-        if (!json.timezone || !json.countryCode || !json.city ||
-            typeof json.lat !== 'number' || typeof json.lon !== 'number')
-            return null;
-        const cc = json.countryCode;
-        return {
-            timezone: json.timezone,
-            city: json.city,
-            countryCode: cc,
-            locale: COUNTRY_LOCALE[cc] || 'en-US',
-            latitude: json.lat,
-            longitude: json.lon,
-        };
+        console.log('Proxy geo response (ip-api):', json);
+        if (json.status === 'success' && json.timezone && json.countryCode) {
+            return {
+                timezone: json.timezone,
+                city: json.city,
+                countryCode: json.countryCode,
+                locale: COUNTRY_LOCALE[json.countryCode] || 'en-US',
+                latitude: json.lat,
+                longitude: json.lon,
+            };
+        }
     }
     catch (err) {
-        console.warn('Geo lookup error:', err);
-        return null;
+        console.warn('Primary geo lookup failed:', err.message);
     }
+    try {
+        console.log('Trying fallback geo provider (ipwho.is)...');
+        const res = await (0, undici_1.fetch)('https://ipwho.is/', { dispatcher });
+        const json = await res.json();
+        console.log('Proxy geo response (ipwho.is):', json);
+        if (json.success && json.timezone && json.country_code) {
+            return {
+                timezone: json.timezone.id,
+                city: json.city,
+                countryCode: json.country_code,
+                locale: COUNTRY_LOCALE[json.country_code] || 'en-US',
+                latitude: json.latitude,
+                longitude: json.longitude,
+            };
+        }
+    }
+    catch (err) {
+        console.warn('Fallback geo lookup failed:', err.message);
+    }
+    return null;
 }
 function fetchWebshareProxies(apiKey) {
     return new Promise((resolve) => {
@@ -317,7 +237,6 @@ let FormFillerService = class FormFillerService {
         console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
         console.log('─────────────────────────────────────────');
         try {
-            const browserEngine = device.engine === 'webkit' ? playwright_extra_1.webkit : playwright_extra_1.chromium;
             const commonArgs = [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -331,10 +250,8 @@ let FormFillerService = class FormFillerService {
                 '--force-webrtc-ip-handling-policy=default_public_interface_only',
                 `--window-size=${device.screen.width},${device.screen.height}`,
             ];
-            const launchArgs = device.engine === 'chromium'
-                ? [...commonArgs, ...chromiumArgs]
-                : commonArgs;
-            const browser = await browserEngine.launch({
+            const launchArgs = [...commonArgs, ...chromiumArgs];
+            const browser = await playwright_1.chromium.launch({
                 headless: false,
                 proxy: { server: localProxy },
                 args: launchArgs,
@@ -348,8 +265,6 @@ let FormFillerService = class FormFillerService {
                 ...(geo ? {
                     locale: geo.locale,
                     timezoneId: geo.timezone,
-                    geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
-                    permissions: ['geolocation'],
                 } : {}),
             });
             const page = await context.newPage();
