@@ -304,126 +304,99 @@ export class FormFillerService {
       return;
     }
 
-    // ── Device profile ──────────────────────────────────────────────────────
-    const device = pickRandom(DEVICE_PROFILES);
-    console.log(`Device profile : ${device.name} (${device.engine})`);
+      // ─── Device profile ──────────────────────────────────────────────────────
+      const device = pickRandom(DEVICE_PROFILES);
+      console.log(`Device profile : ${device.name} (${device.engine})`);
 
-    // ── Proxy server ────────────────────────────────────────────────────────
-    let proxyServer: string;
-    if (wsProxyServer) {
-      proxyServer = wsProxyServer;
-    } else {
-      const proxyList = wsApiKey ? await fetchWebshareProxies(wsApiKey) : FALLBACK_PROXIES;
-      const proxy     = pickRandom(proxyList);
-      proxyServer     = `http://${proxy.host}:${proxy.port}`;
-    }
+      // ─── Proxy server ────────────────────────────────────────────────────────
+      let proxyServer: string;
+      if (wsProxyServer) {
+        proxyServer = wsProxyServer;
+      } else {
+        const proxyList = wsApiKey ? await fetchWebshareProxies(wsApiKey) : FALLBACK_PROXIES;
+        const proxy     = pickRandom(proxyList);
+        proxyServer     = `http://${proxy.host}:${proxy.port}`;
+      }
 
-    // ── Build local anonymous tunnel first ─────────────────────────────────
-    const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
-    const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
+      // ── Build local anonymous tunnel first ─────────────────────────────────
+      const upstreamUrl = proxyServer.replace('http://', `http://${wsUser}:${wsPass}@`);
+      const localProxy  = await proxyChain.anonymizeProxy(upstreamUrl);
 
-    // ── Geo lookup through the tunnel (no auth needed) ──────────────────────
-    console.log('Detecting proxy location...');
-    const geo = await getProxyGeoInfo(localProxy);
-    if (!geo) {
-      console.warn('Geo lookup failed — timezone/locale/geolocation will NOT be set.');
-    }
-
-    console.log('─────────────────────────────────────────');
-    console.log(`Target URL     : ${formUrl}`);
-    console.log(`Proxy          : ${proxyServer}`);
-    console.log(`Local tunnel   : ${localProxy}`);
-    if (geo) {
-      console.log(`Location       : ${geo.city}, ${geo.countryCode}`);
-      console.log(`Timezone       : ${geo.timezone}`);
-      console.log(`Locale         : ${geo.locale}`);
-      console.log(`Geolocation    : ${geo.latitude}, ${geo.longitude}`);
-    }
-    console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
-    console.log('─────────────────────────────────────────');
-
-    try {
-      const browserEngine = device.engine === 'webkit' ? webkit : chromium;
+      // ── Geo lookup through the tunnel (no auth needed) ──────────────────────
+      console.log('Detecting proxy location...');
+      const geo = await getProxyGeoInfo(localProxy);
       
-      const commonArgs = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--ignore-certificate-errors',
-      ];
+      // Fallback if geo lookup fails to avoid "Timezone spoofed" (mismatch between system and IP)
+      // We default to a common timezone if we can't detect it, but this might still flag.
+      // Better to warn.
+      if (!geo) {
+        console.warn('⚠️ Geo lookup failed! Timezone/Locale will default to system, which may trigger "Timezone spoofed".');
+      }
 
-      const chromiumArgs = [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--ignore-certificate-errors-spki-list',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--force-webrtc-ip-handling-policy=default_public_interface_only',
-        `--window-size=${device.screen.width},${device.screen.height}`,
-      ];
+      console.log('─────────────────────────────────────────');
+      console.log(`Target URL     : ${formUrl}`);
+      console.log(`Proxy          : ${proxyServer}`);
+      console.log(`Local tunnel   : ${localProxy}`);
+      if (geo) {
+        console.log(`Location       : ${geo.city}, ${geo.countryCode}`);
+        console.log(`Timezone       : ${geo.timezone}`);
+        console.log(`Locale         : ${geo.locale}`);
+        console.log(`Geolocation    : ${geo.latitude}, ${geo.longitude}`);
+      }
+      console.log(`Screen         : ${device.screen.width}x${device.screen.height}`);
+      console.log('─────────────────────────────────────────');
 
-      const launchArgs = device.engine === 'chromium' 
-        ? [...commonArgs, ...chromiumArgs] 
-        : commonArgs;
+      try {
+        const browserEngine = device.engine === 'webkit' ? webkit : chromium;
+        
+        const commonArgs = [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--ignore-certificate-errors',
+        ];
+  
+        const chromiumArgs = [
+          '--disable-blink-features=AutomationControlled',
+          '--disable-infobars',
+          '--ignore-certificate-errors-spki-list',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--force-webrtc-ip-handling-policy=default_public_interface_only',
+          `--window-size=${device.screen.width},${device.screen.height}`,
+        ];
+  
+        const launchArgs = device.engine === 'chromium' 
+          ? [...commonArgs, ...chromiumArgs] 
+          : commonArgs;
+  
+        const browser = await browserEngine.launch({
+          headless: false,
+          proxy:    { server: localProxy },
+          args:     launchArgs,
+        });
+  
+        const context = await browser.newContext({
+          viewport:          device.viewport,
+          userAgent:         device.userAgent,
+          isMobile:          device.isMobile,
+          hasTouch:          device.hasTouch,
+          ignoreHTTPSErrors: true,
+          // CRITICAL: Set timezone and locale to match the proxy IP
+          ...(geo ? {
+            locale:      geo.locale,
+            timezoneId:  geo.timezone,
+            geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
+            permissions: ['geolocation'],
+          } : {}),
+        });
+  
+        // REMOVED: Manual addInitScript for hardware/WebGL spoofing.
+        // The manual overrides (especially WebGL) were causing "Masking detected".
+        // We rely on the device profile matching the engine (Chromium vs WebKit)
+        // and the stealth plugin to handle the rest.
+        // If specific hardware spoofing is needed, it must be done with deep native hooks,
+        // but often "less is more" for avoiding masking detection.
 
-      const browser = await browserEngine.launch({
-        headless: false,
-        proxy:    { server: localProxy },
-        args:     launchArgs,
-      });
-
-      const context = await browser.newContext({
-        viewport:          device.viewport,
-        userAgent:         device.userAgent,
-        isMobile:          device.isMobile,
-        hasTouch:          device.hasTouch,
-        ignoreHTTPSErrors: true,
-        ...(geo ? {
-          locale:      geo.locale,
-          timezoneId:  geo.timezone,
-          geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
-          permissions: ['geolocation'],
-        } : {}),
-      });
-
-      // We no longer need the complex manual init script because stealth plugin handles most of it.
-      // However, we can add a small script to override specific hardware properties if needed,
-      // matching the device profile more closely than stealth might default to.
-      
-      await context.addInitScript((data) => {
-        // Override hardware concurrency and memory if they differ from host
-        try {
-          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => data.hardwareConcurrency });
-        } catch {}
-        try {
-          if (data.deviceMemory) {
-             // @ts-ignore
-             Object.defineProperty(navigator, 'deviceMemory', { get: () => data.deviceMemory });
-          }
-        } catch {}
-
-        // Override WebGL vendor/renderer to match the profile
-        const _vendor = data.gpu.vendor;
-        const _renderer = data.gpu.renderer;
-        const _patchGL = (Ctx: any) => {
-          try {
-            const _orig = Ctx.prototype.getParameter;
-            Ctx.prototype.getParameter = function (p: any) {
-              // UNMASKED_VENDOR_WEBGL = 0x9245, UNMASKED_RENDERER_WEBGL = 0x9246
-              if (p === 0x9245) return _vendor;
-              if (p === 0x9246) return _renderer;
-              return _orig.call(this, p);
-            };
-          } catch {}
-        };
-        try { _patchGL(WebGLRenderingContext); } catch {}
-        try { _patchGL(WebGL2RenderingContext); } catch {}
-
-      }, { 
-        hardwareConcurrency: device.hardwareConcurrency, 
-        deviceMemory: device.deviceMemory,
-        gpu: device.gpu 
-      });
-
-      const page = await context.newPage();
+        const page = await context.newPage();
 
       console.log('Navigating to URL...');
       await page.goto(formUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });

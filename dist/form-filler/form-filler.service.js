@@ -302,7 +302,7 @@ let FormFillerService = class FormFillerService {
         console.log('Detecting proxy location...');
         const geo = await getProxyGeoInfo(localProxy);
         if (!geo) {
-            console.warn('Geo lookup failed — timezone/locale/geolocation will NOT be set.');
+            console.warn('⚠️ Geo lookup failed! Timezone/Locale will default to system, which may trigger "Timezone spoofed".');
         }
         console.log('─────────────────────────────────────────');
         console.log(`Target URL     : ${formUrl}`);
@@ -351,45 +351,6 @@ let FormFillerService = class FormFillerService {
                     geolocation: { latitude: geo.latitude, longitude: geo.longitude, accuracy: 20 },
                     permissions: ['geolocation'],
                 } : {}),
-            });
-            await context.addInitScript((data) => {
-                try {
-                    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => data.hardwareConcurrency });
-                }
-                catch { }
-                try {
-                    if (data.deviceMemory) {
-                        Object.defineProperty(navigator, 'deviceMemory', { get: () => data.deviceMemory });
-                    }
-                }
-                catch { }
-                const _vendor = data.gpu.vendor;
-                const _renderer = data.gpu.renderer;
-                const _patchGL = (Ctx) => {
-                    try {
-                        const _orig = Ctx.prototype.getParameter;
-                        Ctx.prototype.getParameter = function (p) {
-                            if (p === 0x9245)
-                                return _vendor;
-                            if (p === 0x9246)
-                                return _renderer;
-                            return _orig.call(this, p);
-                        };
-                    }
-                    catch { }
-                };
-                try {
-                    _patchGL(WebGLRenderingContext);
-                }
-                catch { }
-                try {
-                    _patchGL(WebGL2RenderingContext);
-                }
-                catch { }
-            }, {
-                hardwareConcurrency: device.hardwareConcurrency,
-                deviceMemory: device.deviceMemory,
-                gpu: device.gpu
             });
             const page = await context.newPage();
             console.log('Navigating to URL...');
